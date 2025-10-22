@@ -13,6 +13,8 @@ matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+import logging
+from datetime import datetime
 
 from tqdm import tqdm
 from torchvision.utils import save_image, make_grid
@@ -23,9 +25,19 @@ from torch.utils.data import DataLoader
 import math
 
 
-# Create output directory
-OUTPUT_DIR = 'outputs'
+# Setup logging with timestamp
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+# Create timestamped output directory
+timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+OUTPUT_DIR = f'outputs_{timestamp}'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+logger.info(f"Created output directory: {OUTPUT_DIR}")
 
 
 # ============================================================================
@@ -36,7 +48,7 @@ dataset_path = '~/datasets'
 
 cuda = torch.cuda.is_available()  # Automatically detect GPU availability
 DEVICE = torch.device("cuda:0" if cuda else "cpu")
-print(f"Using device: {DEVICE}")
+logger.info(f"Using device: {DEVICE}")
 
 dataset = 'MNIST'
 img_size = (32, 32, 3) if dataset == "CIFAR10" else (28, 28, 1)  # (width, height, channels)
@@ -58,6 +70,23 @@ hidden_dims = [hidden_dim for _ in range(n_layers)]
 torch.manual_seed(seed)
 np.random.seed(seed)
 
+# Log hyperparameters
+logger.info("=" * 60)
+logger.info("Model Hyperparameters:")
+logger.info(f"  Dataset: {dataset}")
+logger.info(f"  Image size: {img_size}")
+logger.info(f"  Timestep embedding dim: {timestep_embedding_dim}")
+logger.info(f"  Number of layers: {n_layers}")
+logger.info(f"  Hidden dim: {hidden_dim}")
+logger.info(f"  Number of timesteps: {n_timesteps}")
+logger.info(f"  Beta min/max: {beta_minmax}")
+logger.info(f"  Train batch size: {train_batch_size}")
+logger.info(f"  Inference batch size: {inference_batch_size}")
+logger.info(f"  Learning rate: {lr}")
+logger.info(f"  Epochs: {epochs}")
+logger.info(f"  Seed: {seed}")
+logger.info("=" * 60)
+
 
 # ============================================================================
 # Step 1. Load (or download) Dataset
@@ -78,6 +107,8 @@ else:
 
 train_loader = DataLoader(dataset=train_dataset, batch_size=train_batch_size, shuffle=True, **kwargs)
 test_loader = DataLoader(dataset=test_dataset, batch_size=inference_batch_size, shuffle=False, **kwargs)
+
+logger.info(f"Dataset loaded: {len(train_dataset)} training samples, {len(test_dataset)} test samples")
 
 
 # ============================================================================
@@ -295,7 +326,7 @@ def save_single_image(x, idx, filename):
     plt.axis('off')
     plt.savefig(os.path.join(OUTPUT_DIR, filename), bbox_inches='tight')
     plt.close(fig)
-    print(f"Saved {filename}")
+    logger.info(f"Saved {filename}")
 
 
 def save_sample_grid(x, postfix, filename):
@@ -306,7 +337,7 @@ def save_sample_grid(x, postfix, filename):
     plt.imshow(np.transpose(make_grid(x.detach().cpu(), padding=2, normalize=True), (1, 2, 0)))
     plt.savefig(os.path.join(OUTPUT_DIR, filename), bbox_inches='tight')
     plt.close()
-    print(f"Saved {filename}")
+    logger.info(f"Saved {filename}")
 
 
 def count_parameters(model):
@@ -328,14 +359,14 @@ diffusion = Diffusion(model, image_resolution=img_size, n_times=n_timesteps,
 optimizer = Adam(diffusion.parameters(), lr=lr)
 denoising_loss = nn.MSELoss()
 
-print("Number of model parameters: ", count_parameters(diffusion))
+logger.info(f"Number of model parameters: {count_parameters(diffusion)}")
 
 
 # ============================================================================
 # Visualizing forward process
 # ============================================================================
 
-print("\nVisualizing forward diffusion process...")
+logger.info("Visualizing forward diffusion process...")
 model.eval()
 for batch_idx, (x, _) in enumerate(test_loader):
     x = x.to(DEVICE)
@@ -353,7 +384,7 @@ save_single_image(perturbed_images, idx=2, filename="perturbed_image_2.png")
 # Step 3. Train Denoising Diffusion Probabilistic Models(DDPMs)
 # ============================================================================
 
-print("\nStart training DDPMs...")
+logger.info("Start training DDPMs...")
 model.train()
 
 for epoch in range(epochs):
@@ -371,16 +402,16 @@ for epoch in range(epochs):
         loss.backward()
         optimizer.step()
 
-    print("\tEpoch", epoch + 1, "complete!", "\tDenoising Loss: ", noise_prediction_loss / batch_idx)
+    logger.info(f"Epoch {epoch + 1}/{epochs} complete! Denoising Loss: {noise_prediction_loss / batch_idx:.6f}")
 
-print("Finish!!")
+logger.info("Training finished!")
 
 
 # ============================================================================
 # Step 4. Sample images from noise.
 # ============================================================================
 
-print("\nGenerating images from noise...")
+logger.info("Generating images from noise...")
 model.eval()
 
 with torch.no_grad():
@@ -399,10 +430,11 @@ save_single_image(generated_images, idx=5, filename="generated_image_5.png")
 # Comparison with ground-truth samples
 # ============================================================================
 
-print("\nSaving comparison grids...")
+logger.info("Saving comparison grids...")
 save_sample_grid(perturbed_images, "Perturbed Images", "comparison_perturbed.png")
 save_sample_grid(generated_images, "Generated Images", "comparison_generated.png")
 save_sample_grid(x[:inference_batch_size], "Ground-truth Images", "comparison_groundtruth.png")
 
-print(f"\nAll outputs saved to '{OUTPUT_DIR}/' directory")
+logger.info(f"All outputs saved to '{OUTPUT_DIR}/' directory")
+logger.info(f"Job completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
