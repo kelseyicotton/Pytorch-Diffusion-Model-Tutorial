@@ -7,15 +7,27 @@ import torch
 import torch.nn as nn
 import math
 import logging
+import os
 from datetime import datetime
 
-# Setup logging with timestamp
+# Create timestamped output directory
+timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+OUTPUT_DIR = f'visualization_logs_{timestamp}'
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Setup logging with timestamp (both console and file)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.StreamHandler(),  # Console output
+        logging.FileHandler(os.path.join(OUTPUT_DIR, 'dimension_analysis.log'))  # File output
+    ]
 )
 logger = logging.getLogger(__name__)
+logger.info(f"Created output directory: {OUTPUT_DIR}")
+logger.info(f"Logs will be saved to: {os.path.join(OUTPUT_DIR, 'dimension_analysis.log')}")
 
 # Simplified version of the model components for dimension tracking
 class SinusoidalPosEmb(nn.Module):
