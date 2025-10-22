@@ -25,19 +25,27 @@ from torch.utils.data import DataLoader
 import math
 
 
-# Setup logging with timestamp
+# Create timestamped output directory first
+timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+OUTPUT_DIR = f'outputs_{timestamp}'
+CHECKPOINT_DIR = os.path.join(OUTPUT_DIR, 'checkpoints')
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
+# Setup logging with timestamp (both console and file)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.StreamHandler(),  # Console output
+        logging.FileHandler(os.path.join(OUTPUT_DIR, 'training.log'))  # File output
+    ]
 )
 logger = logging.getLogger(__name__)
 
-# Create timestamped output directory
-timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-OUTPUT_DIR = f'outputs_{timestamp}'
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 logger.info(f"Created output directory: {OUTPUT_DIR}")
+logger.info(f"Created checkpoint directory: {CHECKPOINT_DIR}")
 
 
 # ============================================================================
@@ -63,6 +71,7 @@ train_batch_size = 128
 inference_batch_size = 64
 lr = 5e-5
 epochs = 100
+save_every_n_epochs = 10  # Save checkpoint every N epochs
 
 seed = 1234
 
@@ -84,8 +93,11 @@ logger.info(f"  Train batch size: {train_batch_size}")
 logger.info(f"  Inference batch size: {inference_batch_size}")
 logger.info(f"  Learning rate: {lr}")
 logger.info(f"  Epochs: {epochs}")
+logger.info(f"  Save every N epochs: {save_every_n_epochs}")
 logger.info(f"  Seed: {seed}")
 logger.info("=" * 60)
+
+# Training configuration will be saved after model initialization
 
 
 # ============================================================================
@@ -344,6 +356,45 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
+def save_checkpoint(diffusion, optimizer, epoch, loss, checkpoint_dir):
+    """Save model checkpoint"""
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': diffusion.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'loss': loss,
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+    
+    # Save latest checkpoint
+    latest_path = os.path.join(checkpoint_dir, 'latest_checkpoint.pth')
+    torch.save(checkpoint, latest_path)
+    
+    # Save epoch-specific checkpoint
+    epoch_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch:03d}.pth')
+    torch.save(checkpoint, epoch_path)
+    
+    logger.info(f"Saved checkpoint: {epoch_path}")
+    return latest_path, epoch_path
+
+
+def load_checkpoint(checkpoint_path, diffusion, optimizer=None, device='cpu'):
+    """Load model checkpoint"""
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    
+    diffusion.load_state_dict(checkpoint['model_state_dict'])
+    
+    if optimizer is not None:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    
+    epoch = checkpoint['epoch']
+    loss = checkpoint['loss']
+    timestamp = checkpoint.get('timestamp', 'Unknown')
+    
+    logger.info(f"Loaded checkpoint from epoch {epoch} (loss: {loss:.6f}, saved: {timestamp})")
+    return epoch, loss
+
+
 # ============================================================================
 # Initialize Model
 # ============================================================================
@@ -360,6 +411,148 @@ optimizer = Adam(diffusion.parameters(), lr=lr)
 denoising_loss = nn.MSELoss()
 
 logger.info(f"Number of model parameters: {count_parameters(diffusion)}")
+
+# ============================================================================
+# Detailed Model Architecture Logging
+# ============================================================================
+
+# Create separate architecture logger
+arch_logger = logging.getLogger('architecture')
+arch_handler = logging.FileHandler(os.path.join(OUTPUT_DIR, 'model_architecture.log'))
+arch_formatter = logging.Formatter('%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+arch_handler.setFormatter(arch_formatter)
+arch_logger.addHandler(arch_handler)
+arch_logger.setLevel(logging.INFO)
+
+# Log architecture details to separate file
+arch_logger.info("=" * 60)
+arch_logger.info("MODEL ARCHITECTURE DETAILS")
+arch_logger.info("=" * 60)
+
+# Input dimensions
+arch_logger.info(f"Input Image Dimensions:")
+arch_logger.info(f"  - Batch size: {train_batch_size} (training), {inference_batch_size} (inference)")
+arch_logger.info(f"  - Image size: {img_size[0]}×{img_size[1]}×{img_size[2]} (H×W×C)")
+arch_logger.info(f"  - Total pixels per image: {img_size[0] * img_size[1] * img_size[2]:,}")
+
+# Network architecture
+arch_logger.info(f"\nDenoiser Network Architecture:")
+arch_logger.info(f"  - Number of layers: {n_layers}")
+arch_logger.info(f"  - Hidden dimension: {hidden_dim}")
+arch_logger.info(f"  - Hidden dimensions per layer: {hidden_dims}")
+
+# Time conditioning
+arch_logger.info(f"\nTime Conditioning:")
+arch_logger.info(f"  - Time embedding dimension: {timestep_embedding_dim}")
+arch_logger.info(f"  - Number of timesteps: {n_timesteps}")
+arch_logger.info(f"  - Beta schedule: {beta_minmax[0]:.2e} to {beta_minmax[1]:.2e}")
+
+# Layer-by-layer breakdown
+arch_logger.info(f"\nLayer-by-Layer Breakdown:")
+arch_logger.info(f"  1. Input Projection: Conv7×7, {img_size[2]}→{hidden_dim} channels")
+arch_logger.info(f"  2. Time Projection: Conv1×1×2, {timestep_embedding_dim}→{hidden_dim} channels")
+
+for i in range(n_layers):
+    dilation = 3 ** ((i-1) // 2) if i > 0 else 1
+    receptive_field = 1 + 2 * dilation
+    arch_logger.info(f"  {i+3}. Conv Block {i}: Conv3×3 (dilation={dilation}, RF≈{receptive_field}×{receptive_field}), {hidden_dim}→{hidden_dim} channels")
+
+arch_logger.info(f"  {n_layers+3}. Output Projection: Conv3×3, {hidden_dim}→{img_size[2]} channels")
+
+# Memory and computation estimates
+total_params = count_parameters(diffusion)
+arch_logger.info(f"\nModel Statistics:")
+arch_logger.info(f"  - Total parameters: {total_params:,}")
+arch_logger.info(f"  - Parameters per layer (avg): {total_params // n_layers:,}")
+arch_logger.info(f"  - Model size (MB): {total_params * 4 / (1024**2):.2f}")
+
+# Forward pass dimension flow
+arch_logger.info(f"\nForward Pass Dimension Flow:")
+arch_logger.info(f"  Input: [{train_batch_size}, {img_size[2]}, {img_size[0]}, {img_size[1]}]")
+arch_logger.info(f"  ↓ Input Projection")
+arch_logger.info(f"  Features: [{train_batch_size}, {hidden_dim}, {img_size[0]}, {img_size[1]}]")
+arch_logger.info(f"  ↓ {n_layers} Conv Blocks with Time Conditioning")
+arch_logger.info(f"  Features: [{train_batch_size}, {hidden_dim}, {img_size[0]}, {img_size[1]}]")
+arch_logger.info(f"  ↓ Output Projection")
+arch_logger.info(f"  Predicted Noise: [{train_batch_size}, {img_size[2]}, {img_size[0]}, {img_size[1]}]")
+
+arch_logger.info("=" * 60)
+
+# Also log to main logger for console output
+logger.info("Model architecture details saved to: model_architecture.log")
+
+# Save training configuration to file (now that model is initialized)
+config = {
+    'dataset': dataset,
+    'img_size': img_size,
+    'timestep_embedding_dim': timestep_embedding_dim,
+    'n_layers': n_layers,
+    'hidden_dim': hidden_dim,
+    'n_timesteps': n_timesteps,
+    'beta_minmax': beta_minmax,
+    'train_batch_size': train_batch_size,
+    'inference_batch_size': inference_batch_size,
+    'lr': lr,
+    'epochs': epochs,
+    'save_every_n_epochs': save_every_n_epochs,
+    'seed': seed,
+    'device': str(DEVICE),
+    'timestamp': timestamp,
+    # Architecture details
+    'architecture': {
+        'input_dimensions': {
+            'batch_size_training': train_batch_size,
+            'batch_size_inference': inference_batch_size,
+            'image_height': img_size[0],
+            'image_width': img_size[1],
+            'image_channels': img_size[2],
+            'total_pixels_per_image': img_size[0] * img_size[1] * img_size[2]
+        },
+        'network_units': {
+            'number_of_layers': n_layers,
+            'hidden_dimension': hidden_dim,
+            'hidden_dimensions_per_layer': hidden_dims,
+            'total_parameters': total_params,
+            'model_size_mb': total_params * 4 / (1024**2)
+        },
+        'conditioning_vector': {
+            'time_embedding_dimension': timestep_embedding_dim,
+            'number_of_timesteps': n_timesteps,
+            'beta_schedule_min': beta_minmax[0],
+            'beta_schedule_max': beta_minmax[1]
+        },
+        'layer_breakdown': [
+            {
+                'layer': 1,
+                'type': 'Input Projection',
+                'operation': f'Conv7×7, {img_size[2]}→{hidden_dim} channels'
+            },
+            {
+                'layer': 2,
+                'type': 'Time Projection',
+                'operation': f'Conv1×1×2, {timestep_embedding_dim}→{hidden_dim} channels'
+            }
+        ] + [
+            {
+                'layer': i + 3,
+                'type': f'Conv Block {i}',
+                'operation': f'Conv3×3 (dilation={3 ** ((i-1) // 2) if i > 0 else 1}, RF≈{1 + 2 * (3 ** ((i-1) // 2) if i > 0 else 1)}×{1 + 2 * (3 ** ((i-1) // 2) if i > 0 else 1)}), {hidden_dim}→{hidden_dim} channels'
+            } for i in range(n_layers)
+        ] + [
+            {
+                'layer': n_layers + 3,
+                'type': 'Output Projection',
+                'operation': f'Conv3×3, {hidden_dim}→{img_size[2]} channels'
+            }
+        ]
+    }
+}
+
+import json
+config_path = os.path.join(OUTPUT_DIR, 'training_config.json')
+with open(config_path, 'w') as f:
+    json.dump(config, f, indent=2)
+logger.info(f"Training configuration saved to: {config_path}")
 
 
 # ============================================================================
@@ -402,7 +595,12 @@ for epoch in range(epochs):
         loss.backward()
         optimizer.step()
 
-    logger.info(f"Epoch {epoch + 1}/{epochs} complete! Denoising Loss: {noise_prediction_loss / batch_idx:.6f}")
+    avg_loss = noise_prediction_loss / batch_idx
+    logger.info(f"Epoch {epoch + 1}/{epochs} complete! Denoising Loss: {avg_loss:.6f}")
+    
+    # Save checkpoint every N epochs or at the end
+    if (epoch + 1) % save_every_n_epochs == 0 or (epoch + 1) == epochs:
+        save_checkpoint(diffusion, optimizer, epoch + 1, avg_loss, CHECKPOINT_DIR)
 
 logger.info("Training finished!")
 
@@ -437,4 +635,64 @@ save_sample_grid(x[:inference_batch_size], "Ground-truth Images", "comparison_gr
 
 logger.info(f"All outputs saved to '{OUTPUT_DIR}/' directory")
 logger.info(f"Job completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+
+# ============================================================================
+# Function to generate images from saved checkpoint
+# ============================================================================
+
+def generate_from_checkpoint(checkpoint_path, num_images=64, output_dir=None):
+    """
+    Generate images from a saved checkpoint
+    
+    Args:
+        checkpoint_path: Path to the checkpoint file
+        num_images: Number of images to generate
+        output_dir: Directory to save generated images (default: checkpoint directory)
+    """
+    logger.info(f"Loading checkpoint from: {checkpoint_path}")
+    
+    # Initialize model with same architecture
+    model = Denoiser(image_resolution=img_size,
+                     hidden_dims=hidden_dims,
+                     diffusion_time_embedding_dim=timestep_embedding_dim,
+                     n_times=n_timesteps).to(DEVICE)
+    
+    diffusion = Diffusion(model, image_resolution=img_size, n_times=n_timesteps,
+                          beta_minmax=beta_minmax, device=DEVICE).to(DEVICE)
+    
+    # Load checkpoint
+    epoch, loss = load_checkpoint(checkpoint_path, diffusion, device=DEVICE)
+    
+    # Set output directory
+    if output_dir is None:
+        checkpoint_dir = os.path.dirname(checkpoint_path)
+        output_dir = os.path.join(checkpoint_dir, f'generated_from_epoch_{epoch}')
+    os.makedirs(output_dir, exist_ok=True)
+    
+    logger.info(f"Generating {num_images} images...")
+    model.eval()
+    
+    with torch.no_grad():
+        generated_images = diffusion.sample(N=num_images)
+    
+    # Save individual generated images
+    for i in range(min(num_images, 10)):  # Save first 10 as individual images
+        save_single_image(generated_images, idx=i, 
+                         filename=f"generated_from_epoch_{epoch}_image_{i:02d}.png")
+    
+    # Save grid
+    save_sample_grid(generated_images, f"Generated from Epoch {epoch}", 
+                    f"generated_grid_epoch_{epoch}.png")
+    
+    logger.info(f"Generated images saved to: {output_dir}")
+    return generated_images
+
+
+# Example usage (uncomment to use):
+# if __name__ == "__main__":
+#     # Generate from latest checkpoint
+#     latest_checkpoint = os.path.join(CHECKPOINT_DIR, 'latest_checkpoint.pth')
+#     if os.path.exists(latest_checkpoint):
+#         generate_from_checkpoint(latest_checkpoint, num_images=32)
 
