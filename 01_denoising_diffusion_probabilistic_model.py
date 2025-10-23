@@ -617,12 +617,38 @@ def save_visualization_grid(images, title, filename, output_dir, num_cols=4):
         col = i % num_cols
         ax = axes[row, col] if num_rows > 1 else axes[col]
         
-        # Convert tensor to numpy and transpose for display
+        # Convert tensor to numpy and handle different image formats
         img_np = img.detach().cpu().numpy()
-        if img_np.shape[0] == 1:  # Grayscale
-            ax.imshow(img_np[0], cmap='gray')
-        else:  # RGB
-            ax.imshow(np.transpose(img_np, (1, 2, 0)))
+        
+        # Debug: Print shape information
+        if i == 0:  # Only print for first image to avoid spam
+            print(f"Debug: Image {i} shape: {img_np.shape}")
+        
+        # Handle different tensor shapes
+        if len(img_np.shape) == 4:  # Batch of images (B, C, H, W)
+            img_np = img_np[0]  # Take first image from batch
+            if i == 0:
+                print(f"Debug: After batch selection, shape: {img_np.shape}")
+        
+        if len(img_np.shape) == 3:
+            if img_np.shape[0] == 1:  # Grayscale (1, H, W)
+                ax.imshow(img_np[0], cmap='gray')
+            elif img_np.shape[0] == 3:  # RGB (3, H, W)
+                ax.imshow(np.transpose(img_np, (1, 2, 0)))
+            else:  # Unexpected format, try to display as is
+                ax.imshow(img_np[0], cmap='gray')
+        elif len(img_np.shape) == 2:  # Already 2D (H, W)
+            ax.imshow(img_np, cmap='gray')
+        else:
+            # Fallback: try to reshape to 2D
+            print(f"Warning: Unexpected image shape {img_np.shape}, attempting to display")
+            if img_np.size > 0:
+                # Try to reshape to square-ish
+                side_len = int(np.sqrt(img_np.size))
+                if side_len * side_len == img_np.size:
+                    ax.imshow(img_np.reshape(side_len, side_len), cmap='gray')
+                else:
+                    ax.imshow(img_np.flatten()[:784].reshape(28, 28), cmap='gray')
         
         ax.set_title(f"Step {i}")
         ax.axis('off')
