@@ -179,6 +179,18 @@ print(f"Config keys available: {list(config.keys())}")
 print(f"log_images value: {config.get('log_images', 'NOT FOUND')}")
 print(f"enable_tensorboard value: {config.get('enable_tensorboard', 'NOT FOUND')}")
 
+# Add a check to detect if config is being modified
+def check_config_integrity():
+    """Check if config has been modified"""
+    missing_keys = []
+    for key in original_config.keys():
+        if key not in config:
+            missing_keys.append(key)
+    if missing_keys:
+        print(f"WARNING: Config keys were removed: {missing_keys}")
+        return False
+    return True
+
 # Safety function to ensure config keys exist
 def ensure_config_key(key, default_value):
     """Ensure a config key exists, add default if missing"""
@@ -186,6 +198,28 @@ def ensure_config_key(key, default_value):
         print(f"Warning: Missing config key '{key}', using default value: {default_value}")
         config[key] = default_value
     return config[key]
+
+# Create a frozen copy of the config to prevent modifications
+original_config = config.copy()
+frozen_config = config.copy()
+
+def get_config_value(key, default_value):
+    """Get config value with fallback to original config and then default"""
+    # First try current config
+    if key in config:
+        return config[key]
+    # Then try original config
+    elif key in original_config:
+        print(f"Warning: Config key '{key}' was modified, restoring from original config")
+        config[key] = original_config[key]
+        return config[key]
+    # Finally use default
+    else:
+        print(f"Warning: Config key '{key}' not found, using default value: {default_value}")
+        print(f"Available keys: {list(config.keys())}")
+        print(f"Original keys: {list(original_config.keys())}")
+        config[key] = default_value
+        return default_value
 
 # Create timestamped output directory first
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -669,7 +703,7 @@ def log_denoising_process(diffusion, writer, epoch):
             forward_images.append(noisy_x)
         
         # Log forward process to TensorBoard
-        if writer is not None and ensure_config_key('log_images', True):
+        if writer is not None and get_config_value('log_images', True):
             forward_grid = torch.cat(forward_images, dim=0)
             writer.add_images(f"Denoising/Forward_Process_Epoch_{epoch}", forward_grid, epoch)
         
@@ -686,7 +720,7 @@ def log_denoising_process(diffusion, writer, epoch):
         noise_difference = torch.abs(actual_noise - predicted_noise)
         
         # Log noise comparison to TensorBoard
-        if writer is not None and ensure_config_key('log_images', True):
+        if writer is not None and get_config_value('log_images', True):
             writer.add_images(f"Denoising/Actual_Noise_Epoch_{epoch}", actual_noise, epoch)
             writer.add_images(f"Denoising/Predicted_Noise_Epoch_{epoch}", predicted_noise, epoch)
             writer.add_images(f"Denoising/Noise_Difference_Epoch_{epoch}", noise_difference, epoch)
@@ -712,7 +746,7 @@ def log_denoising_process(diffusion, writer, epoch):
             denoising_steps.append(x_vis_step)
         
         # Log reverse process to TensorBoard
-        if writer is not None and ensure_config_key('log_images', True):
+        if writer is not None and get_config_value('log_images', True):
             reverse_grid = torch.cat(denoising_steps, dim=0)
             writer.add_images(f"Denoising/Reverse_Process_Epoch_{epoch}", reverse_grid, epoch)
         
@@ -1000,7 +1034,9 @@ for batch_idx, (x, _) in enumerate(test_loader):
     break
 
 # Log forward process images to TensorBoard
-if writer is not None and ensure_config_key('log_images', True):
+# Check config integrity before accessing
+check_config_integrity()
+if writer is not None and get_config_value('log_images', True):
     writer.add_images("Forward_Process/Perturbed", perturbed_images, 0)
     writer.add_image("Forward_Process/Sample_0", perturbed_images[0], 0)
     writer.add_image("Forward_Process/Sample_1", perturbed_images[1], 0)
@@ -1093,7 +1129,7 @@ for epoch in range(epochs):
         writer.add_histogram("Training/Loss_Distribution", batch_losses_tensor, epoch + 1)
     
     # Save loss curve plot every N epochs
-    if (epoch + 1) % ensure_config_key('loss_analysis_every', 10) == 0:
+    if (epoch + 1) % get_config_value('loss_analysis_every', 10) == 0:
         plt.figure(figsize=(12, 8))
         
         # Plot 1: Loss over batches in this epoch
@@ -1135,14 +1171,14 @@ for epoch in range(epochs):
         logger.info(f"Saved loss analysis: loss_analysis_epoch_{epoch+1:03d}.png")
     
     # Log model parameters (gradients and weights) every N epochs
-    if (epoch + 1) % ensure_config_key('param_hist_every', 10) == 0 and writer is not None and ensure_config_key('log_parameters', True):
+    if (epoch + 1) % get_config_value('param_hist_every', 10) == 0 and writer is not None and get_config_value('log_parameters', True):
         for name, param in model.named_parameters():
             if param.grad is not None:
                 writer.add_histogram(f"Gradients/{name}", param.grad, epoch + 1)
             writer.add_histogram(f"Weights/{name}", param, epoch + 1)
     
     # Log denoising process visualization every N epochs
-    if (epoch + 1) % ensure_config_key('denoising_viz_every', 5) == 0:
+    if (epoch + 1) % get_config_value('denoising_viz_every', 5) == 0:
         log_denoising_process(diffusion, writer, epoch + 1)
     
     # Save checkpoint every N epochs or at the end
@@ -1151,10 +1187,10 @@ for epoch in range(epochs):
         
         # Generate samples at checkpoint
         checkpoint_samples = generate_checkpoint_samples(diffusion, epoch + 1, 
-                                                       num_samples=ensure_config_key('checkpoint_num_samples', 16))
+                                                       num_samples=get_config_value('checkpoint_num_samples', 16))
         
         # Log checkpoint samples to TensorBoard
-        if writer is not None and ensure_config_key('log_images', True):
+        if writer is not None and get_config_value('log_images', True):
             writer.add_images(f"Checkpoint_Samples/Epoch_{epoch+1:03d}", checkpoint_samples, epoch + 1)
             writer.add_image(f"Checkpoint_Samples/Epoch_{epoch+1:03d}_Sample_0", checkpoint_samples[0], epoch + 1)
             writer.add_image(f"Checkpoint_Samples/Epoch_{epoch+1:03d}_Sample_1", checkpoint_samples[1], epoch + 1)
@@ -1171,17 +1207,17 @@ logger.info("Generating images from noise...")
 model.eval()
 
 with torch.no_grad():
-    generated_images = diffusion.sample(N=ensure_config_key('final_generation_count', 64))
+    generated_images = diffusion.sample(N=get_config_value('final_generation_count', 64))
 
 # Log generated images to TensorBoard
-if writer is not None and ensure_config_key('log_images', True):
+if writer is not None and get_config_value('log_images', True):
     writer.add_images("Generated/Images", generated_images, 0)
     writer.add_image("Generated/Sample_0", generated_images[0], 0)
     writer.add_image("Generated/Sample_1", generated_images[1], 0)
     writer.add_image("Generated/Sample_2", generated_images[2], 0)
 
 # Save individual generated images (if enabled)
-if ensure_config_key('save_generated_individuals', True):
+if get_config_value('save_generated_individuals', True):
     for i in range(min(6, len(generated_images))):
         save_single_image(generated_images, idx=i, filename=f"generated_image_{i}.png")
 
@@ -1191,16 +1227,16 @@ if ensure_config_key('save_generated_individuals', True):
 # ============================================================================
 
 logger.info("Saving comparison grids...")
-if ensure_config_key('save_grid_images', True):
+if get_config_value('save_grid_images', True):
     save_sample_grid(perturbed_images, "Perturbed Images", "comparison_perturbed.png")
     save_sample_grid(generated_images, "Generated Images", "comparison_generated.png")
-    save_sample_grid(x[:ensure_config_key('final_generation_count', 64)], "Ground-truth Images", "comparison_groundtruth.png")
+    save_sample_grid(x[:get_config_value('final_generation_count', 64)], "Ground-truth Images", "comparison_groundtruth.png")
 
 # Log comparison images to TensorBoard
-if writer is not None and ensure_config_key('log_images', True):
+if writer is not None and get_config_value('log_images', True):
     writer.add_images("Comparison/Perturbed", perturbed_images, 0)
     writer.add_images("Comparison/Generated", generated_images, 0)
-    writer.add_images("Comparison/Ground_Truth", x[:ensure_config_key('final_generation_count', 64)], 0)
+    writer.add_images("Comparison/Ground_Truth", x[:get_config_value('final_generation_count', 64)], 0)
 
     # Log hyperparameters and metrics to TensorBoard
     writer.add_hparams(hparams, {"Final/Loss": avg_loss})
