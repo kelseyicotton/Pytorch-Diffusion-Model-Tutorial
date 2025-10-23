@@ -118,54 +118,66 @@ def load_config(config_path='config.ini'):
     return cfg
 
 
-# Load configuration
+# Default configuration (fallback)
+default_config = {
+    'dataset': 'MNIST',
+    'dataset_path': '~/datasets',
+    'img_size': (28, 28, 1),
+    'num_workers': 1,
+    'pin_memory': True,
+    'timestep_embedding_dim': 256,
+    'n_layers': 8,
+    'hidden_dim': 256,
+    'n_timesteps': 1000,
+    'beta_minmax': [1e-4, 2e-2],
+    'train_batch_size': 128,
+    'inference_batch_size': 64,
+    'lr': 5e-5,
+    'epochs': 100,
+    'save_every_n_epochs': 10,
+    'seed': 1234,
+    'denoising_viz_every': 5,
+    'checkpoint_samples_every': 10,
+    'checkpoint_num_samples': 16,
+    'loss_analysis_every': 10,
+    'param_hist_every': 10,
+    'base_output_dir': 'outputs',
+    'save_individual_images': True,
+    'save_grid_images': True,
+    'image_dpi': 150,
+    'device': 'auto',
+    'gpu_id': 0,
+    'log_level': 'INFO',
+    'save_logs': True,
+    'save_architecture': True,
+    'enable_tensorboard': True,
+    'log_images': True,
+    'log_parameters': True,
+    'final_generation_count': 64,
+    'checkpoint_generation_count': 20,
+    'save_generated_individuals': True,
+    'save_generated_grid': True
+}
+
+# Load configuration with fallback
 try:
     config = load_config()
-    logger = logging.getLogger(__name__)
-    logger.info("Configuration loaded successfully")
+    print("Configuration loaded successfully")
 except Exception as e:
     print(f"Error loading configuration: {e}")
     print("Using default configuration values...")
-    # Fallback to default config if loading fails
-    config = {
-        'dataset': 'MNIST',
-        'dataset_path': '~/datasets',
-        'img_size': (28, 28, 1),
-        'num_workers': 1,
-        'pin_memory': True,
-        'timestep_embedding_dim': 256,
-        'n_layers': 8,
-        'hidden_dim': 256,
-        'n_timesteps': 1000,
-        'beta_minmax': [1e-4, 2e-2],
-        'train_batch_size': 128,
-        'inference_batch_size': 64,
-        'lr': 5e-5,
-        'epochs': 100,
-        'save_every_n_epochs': 10,
-        'seed': 1234,
-        'denoising_viz_every': 5,
-        'checkpoint_samples_every': 10,
-        'checkpoint_num_samples': 16,
-        'loss_analysis_every': 10,
-        'param_hist_every': 10,
-        'base_output_dir': 'outputs',
-        'save_individual_images': True,
-        'save_grid_images': True,
-        'image_dpi': 150,
-        'device': 'auto',
-        'gpu_id': 0,
-        'log_level': 'INFO',
-        'save_logs': True,
-        'save_architecture': True,
-        'enable_tensorboard': True,
-        'log_images': True,
-        'log_parameters': True,
-        'final_generation_count': 64,
-        'checkpoint_generation_count': 20,
-        'save_generated_individuals': True,
-        'save_generated_grid': True
-    }
+    config = default_config.copy()
+
+# Ensure all required keys exist in config
+for key, default_value in default_config.items():
+    if key not in config:
+        print(f"Warning: Missing config key '{key}', using default value: {default_value}")
+        config[key] = default_value
+
+# Debug: Print config keys to help troubleshoot
+print(f"Config keys available: {list(config.keys())}")
+print(f"log_images value: {config.get('log_images', 'NOT FOUND')}")
+print(f"enable_tensorboard value: {config.get('enable_tensorboard', 'NOT FOUND')}")
 
 # Create timestamped output directory first
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
