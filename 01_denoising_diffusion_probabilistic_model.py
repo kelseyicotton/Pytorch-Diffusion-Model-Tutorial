@@ -40,69 +40,132 @@ def load_config(config_path='config.ini'):
     def parse_bool(value):
         return value.lower() in ('true', '1', 'yes', 'on')
     
-    # Parse configuration
+    # Helper function to get config values with defaults
+    def get_config(section, key, default=None, dtype=str):
+        try:
+            if dtype == bool:
+                return parse_bool(config.get(section, key))
+            elif dtype == int:
+                return config.getint(section, key)
+            elif dtype == float:
+                return config.getfloat(section, key)
+            else:
+                return config.get(section, key)
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+            if default is not None:
+                return default
+            else:
+                raise
+    
+    # Parse configuration with defaults
     cfg = {
         # Dataset
-        'dataset': config.get('Dataset', 'dataset'),
-        'dataset_path': config.get('Dataset', 'dataset_path'),
-        'img_size': tuple(parse_list(config.get('Dataset', 'img_size'), int)),
-        'num_workers': config.getint('Dataset', 'num_workers'),
-        'pin_memory': parse_bool(config.get('Dataset', 'pin_memory')),
+        'dataset': get_config('Dataset', 'dataset', 'MNIST'),
+        'dataset_path': get_config('Dataset', 'dataset_path', '~/datasets'),
+        'img_size': tuple(parse_list(get_config('Dataset', 'img_size', '28, 28, 1'), int)),
+        'num_workers': get_config('Dataset', 'num_workers', 1, int),
+        'pin_memory': get_config('Dataset', 'pin_memory', True, bool),
         
         # Model
-        'timestep_embedding_dim': config.getint('Model', 'timestep_embedding_dim'),
-        'n_layers': config.getint('Model', 'n_layers'),
-        'hidden_dim': config.getint('Model', 'hidden_dim'),
-        'n_timesteps': config.getint('Model', 'n_timesteps'),
-        'beta_minmax': parse_list(config.get('Model', 'beta_minmax'), float),
+        'timestep_embedding_dim': get_config('Model', 'timestep_embedding_dim', 256, int),
+        'n_layers': get_config('Model', 'n_layers', 8, int),
+        'hidden_dim': get_config('Model', 'hidden_dim', 256, int),
+        'n_timesteps': get_config('Model', 'n_timesteps', 1000, int),
+        'beta_minmax': parse_list(get_config('Model', 'beta_minmax', '1e-4, 2e-2'), float),
         
         # Training
-        'train_batch_size': config.getint('Training', 'train_batch_size'),
-        'inference_batch_size': config.getint('Training', 'inference_batch_size'),
-        'lr': config.getfloat('Training', 'lr'),
-        'epochs': config.getint('Training', 'epochs'),
-        'save_every_n_epochs': config.getint('Training', 'save_every_n_epochs'),
-        'seed': config.getint('Training', 'seed'),
+        'train_batch_size': get_config('Training', 'train_batch_size', 128, int),
+        'inference_batch_size': get_config('Training', 'inference_batch_size', 64, int),
+        'lr': get_config('Training', 'lr', 5e-5, float),
+        'epochs': get_config('Training', 'epochs', 100, int),
+        'save_every_n_epochs': get_config('Training', 'save_every_n_epochs', 10, int),
+        'seed': get_config('Training', 'seed', 1234, int),
         
         # Visualization
-        'denoising_viz_every': config.getint('Visualization', 'denoising_viz_every'),
-        'checkpoint_samples_every': config.getint('Visualization', 'checkpoint_samples_every'),
-        'checkpoint_num_samples': config.getint('Visualization', 'checkpoint_num_samples'),
-        'loss_analysis_every': config.getint('Visualization', 'loss_analysis_every'),
-        'param_hist_every': config.getint('Visualization', 'param_hist_every'),
+        'denoising_viz_every': get_config('Visualization', 'denoising_viz_every', 5, int),
+        'checkpoint_samples_every': get_config('Visualization', 'checkpoint_samples_every', 10, int),
+        'checkpoint_num_samples': get_config('Visualization', 'checkpoint_num_samples', 16, int),
+        'loss_analysis_every': get_config('Visualization', 'loss_analysis_every', 10, int),
+        'param_hist_every': get_config('Visualization', 'param_hist_every', 10, int),
         
         # Output
-        'base_output_dir': config.get('Output', 'base_output_dir'),
-        'save_individual_images': parse_bool(config.get('Output', 'save_individual_images')),
-        'save_grid_images': parse_bool(config.get('Output', 'save_grid_images')),
-        'image_dpi': config.getint('Output', 'image_dpi'),
+        'base_output_dir': get_config('Output', 'base_output_dir', 'outputs'),
+        'save_individual_images': get_config('Output', 'save_individual_images', True, bool),
+        'save_grid_images': get_config('Output', 'save_grid_images', True, bool),
+        'image_dpi': get_config('Output', 'image_dpi', 150, int),
         
         # Device
-        'device': config.get('Device', 'device'),
-        'gpu_id': config.getint('Device', 'gpu_id'),
+        'device': get_config('Device', 'device', 'auto'),
+        'gpu_id': get_config('Device', 'gpu_id', 0, int),
         
         # Logging
-        'log_level': config.get('Logging', 'log_level'),
-        'save_logs': parse_bool(config.get('Logging', 'save_logs')),
-        'save_architecture': parse_bool(config.get('Logging', 'save_architecture')),
+        'log_level': get_config('Logging', 'log_level', 'INFO'),
+        'save_logs': get_config('Logging', 'save_logs', True, bool),
+        'save_architecture': get_config('Logging', 'save_architecture', True, bool),
         
         # TensorBoard
-        'enable_tensorboard': parse_bool(config.get('TensorBoard', 'enable_tensorboard')),
-        'log_images': parse_bool(config.get('TensorBoard', 'log_images')),
-        'log_parameters': parse_bool(config.get('TensorBoard', 'log_parameters')),
+        'enable_tensorboard': get_config('TensorBoard', 'enable_tensorboard', True, bool),
+        'log_images': get_config('TensorBoard', 'log_images', True, bool),
+        'log_parameters': get_config('TensorBoard', 'log_parameters', True, bool),
         
         # Generation
-        'final_generation_count': config.getint('Generation', 'final_generation_count'),
-        'checkpoint_generation_count': config.getint('Generation', 'checkpoint_generation_count'),
-        'save_generated_individuals': parse_bool(config.get('Generation', 'save_generated_individuals')),
-        'save_generated_grid': parse_bool(config.get('Generation', 'save_generated_grid'))
+        'final_generation_count': get_config('Generation', 'final_generation_count', 64, int),
+        'checkpoint_generation_count': get_config('Generation', 'checkpoint_generation_count', 20, int),
+        'save_generated_individuals': get_config('Generation', 'save_generated_individuals', True, bool),
+        'save_generated_grid': get_config('Generation', 'save_generated_grid', True, bool)
     }
     
     return cfg
 
 
 # Load configuration
-config = load_config()
+try:
+    config = load_config()
+    logger = logging.getLogger(__name__)
+    logger.info("Configuration loaded successfully")
+except Exception as e:
+    print(f"Error loading configuration: {e}")
+    print("Using default configuration values...")
+    # Fallback to default config if loading fails
+    config = {
+        'dataset': 'MNIST',
+        'dataset_path': '~/datasets',
+        'img_size': (28, 28, 1),
+        'num_workers': 1,
+        'pin_memory': True,
+        'timestep_embedding_dim': 256,
+        'n_layers': 8,
+        'hidden_dim': 256,
+        'n_timesteps': 1000,
+        'beta_minmax': [1e-4, 2e-2],
+        'train_batch_size': 128,
+        'inference_batch_size': 64,
+        'lr': 5e-5,
+        'epochs': 100,
+        'save_every_n_epochs': 10,
+        'seed': 1234,
+        'denoising_viz_every': 5,
+        'checkpoint_samples_every': 10,
+        'checkpoint_num_samples': 16,
+        'loss_analysis_every': 10,
+        'param_hist_every': 10,
+        'base_output_dir': 'outputs',
+        'save_individual_images': True,
+        'save_grid_images': True,
+        'image_dpi': 150,
+        'device': 'auto',
+        'gpu_id': 0,
+        'log_level': 'INFO',
+        'save_logs': True,
+        'save_architecture': True,
+        'enable_tensorboard': True,
+        'log_images': True,
+        'log_parameters': True,
+        'final_generation_count': 64,
+        'checkpoint_generation_count': 20,
+        'save_generated_individuals': True,
+        'save_generated_grid': True
+    }
 
 # Create timestamped output directory first
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
