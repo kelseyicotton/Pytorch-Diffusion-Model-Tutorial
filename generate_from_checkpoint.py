@@ -16,8 +16,47 @@ import logging
 import argparse
 from datetime import datetime
 import math
+import configparser
 
 from torchvision.utils import make_grid
+
+
+def load_config(config_path='config.ini'):
+    """Load configuration from INI file"""
+    config = configparser.ConfigParser()
+    config.read(config_path)
+    
+    # Convert string values to appropriate types
+    def parse_list(value, dtype=float):
+        return [dtype(x.strip()) for x in value.split(',')]
+    
+    def parse_bool(value):
+        return value.lower() in ('true', '1', 'yes', 'on')
+    
+    # Parse configuration
+    cfg = {
+        # Dataset
+        'dataset': config.get('Dataset', 'dataset'),
+        'img_size': tuple(parse_list(config.get('Dataset', 'img_size'), int)),
+        
+        # Model
+        'timestep_embedding_dim': config.getint('Model', 'timestep_embedding_dim'),
+        'n_layers': config.getint('Model', 'n_layers'),
+        'hidden_dim': config.getint('Model', 'hidden_dim'),
+        'n_timesteps': config.getint('Model', 'n_timesteps'),
+        'beta_minmax': parse_list(config.get('Model', 'beta_minmax'), float),
+        
+        # Device
+        'device': config.get('Device', 'device'),
+        'gpu_id': config.getint('Device', 'gpu_id'),
+        
+        # Generation
+        'checkpoint_generation_count': config.getint('Generation', 'checkpoint_generation_count'),
+        'save_generated_individuals': parse_bool(config.get('Generation', 'save_generated_individuals')),
+        'save_generated_grid': parse_bool(config.get('Generation', 'save_generated_grid'))
+    }
+    
+    return cfg
 
 
 # ============================================================================
@@ -205,46 +244,74 @@ def load_checkpoint(checkpoint_path, diffusion, device='cpu'):
 def load_config_from_checkpoint_dir(checkpoint_path):
     """Load training configuration from the checkpoint directory"""
     checkpoint_dir = os.path.dirname(checkpoint_path)
-    config_path = os.path.join(os.path.dirname(checkpoint_dir), 'training_config.json')
     
-    if os.path.exists(config_path):
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-        print(f"Loaded training config from: {config_path}")
-        return config
-    else:
-        print(f"Warning: Config file not found at {config_path}")
-        return None
+    # Try to find config files in the output directory
+    output_dir = os.path.dirname(checkpoint_dir)
+    config_paths = [
+        os.path.join(output_dir, 'training_config_used.json'),
+        os.path.join(output_dir, 'training_config.json'),
+        os.path.join(checkpoint_dir, 'training_config_used.json'),
+        os.path.join(checkpoint_dir, 'training_config.json')
+    ]
+    
+    for config_path in config_paths:
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            print(f"Loaded training config from: {config_path}")
+            return config
+    
+    print(f"Warning: No config file found in expected locations")
+    return None
 
 
-def generate_from_checkpoint(checkpoint_path, num_images=64, output_dir=None):
+def generate_from_checkpoint(checkpoint_path, num_images=None, output_dir=None, config_path='config.ini'):
     """
     Generate images from a saved checkpoint
     
     Args:
         checkpoint_path: Path to the checkpoint file
-        num_images: Number of images to generate
+        num_images: Number of images to generate (uses config default if None)
         output_dir: Directory to save generated images
+        config_path: Path to config file
     """
     print(f"Loading checkpoint from: {checkpoint_path}")
     
-    # Load training configuration
-    config = load_config_from_checkpoint_dir(checkpoint_path)
+    # Load configuration
+    cfg = load_config(config_path)
     
-    if config is None:
-        print("Error: Could not load training configuration. Using default values.")
-        return None
+    # Use config default if num_images not specified
+    if num_images is None:
+        num_images = cfg['checkpoint_generation_count']
     
-    # Extract configuration
-    img_size = tuple(config['img_size'])
-    hidden_dims = [config['hidden_dim'] for _ in range(config['n_layers'])]
-    timestep_embedding_dim = config['timestep_embedding_dim']
-    n_timesteps = config['n_timesteps']
-    beta_minmax = config['beta_minmax']
-    device_str = config['device']
+    # Load training configuration from checkpoint directory
+    training_config = load_config_from_checkpoint_dir(checkpoint_path)
+    
+    if training_config is None:
+        print("Error: Could not load training configuration. Using config.ini values.")
+        # Use config values as fallback
+        img_size = cfg['img_size']
+        hidden_dims = [cfg['hidden_dim'] for _ in range(cfg['n_layers'])]
+        timestep_embedding_dim = cfg['timestep_embedding_dim']
+        n_timesteps = cfg['n_timesteps']
+        beta_minmax = cfg['beta_minmax']
+        device_str = cfg['device']
+    else:
+        # Extract configuration from checkpoint
+        img_size = tuple(training_config['img_size'])
+        hidden_dims = [training_config['hidden_dim'] for _ in range(training_config['n_layers'])]
+        timestep_embedding_dim = training_config['timestep_embedding_dim']
+        n_timesteps = training_config['n_timesteps']
+        beta_minmax = training_config['beta_minmax']
+        device_str = training_config['device']
     
     # Setup device
-    device = torch.device(device_str if torch.cuda.is_available() else 'cpu')
+    if device_str == 'auto':
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    elif device_str == 'cuda':
+        device = torch.device(f"cuda:{cfg['gpu_id']}")
+    else:
+        device = torch.device(device_str)
     print(f"Using device: {device}")
     
     # Initialize model with same architecture
@@ -271,15 +338,17 @@ def generate_from_checkpoint(checkpoint_path, num_images=64, output_dir=None):
     with torch.no_grad():
         generated_images = diffusion.sample(N=num_images)
     
-    # Save individual generated images
-    for i in range(min(num_images, 10)):  # Save first 10 as individual images
-        save_single_image(generated_images, idx=i, 
-                         filename=f"generated_from_epoch_{epoch}_image_{i:02d}.png",
-                         output_dir=output_dir)
+    # Save individual generated images (if enabled in config)
+    if cfg['save_generated_individuals']:
+        for i in range(min(num_images, 10)):  # Save first 10 as individual images
+            save_single_image(generated_images, idx=i, 
+                             filename=f"generated_from_epoch_{epoch}_image_{i:02d}.png",
+                             output_dir=output_dir)
     
-    # Save grid
-    save_sample_grid(generated_images, f"Generated from Epoch {epoch}", 
-                    f"generated_grid_epoch_{epoch}.png", output_dir)
+    # Save grid (if enabled in config)
+    if cfg['save_generated_grid']:
+        save_sample_grid(generated_images, f"Generated from Epoch {epoch}", 
+                        f"generated_grid_epoch_{epoch}.png", output_dir)
     
     print(f"Generated images saved to: {output_dir}")
     return generated_images
@@ -288,8 +357,9 @@ def generate_from_checkpoint(checkpoint_path, num_images=64, output_dir=None):
 def main():
     parser = argparse.ArgumentParser(description='Generate images from DDPM checkpoint')
     parser.add_argument('checkpoint_path', help='Path to the checkpoint file')
-    parser.add_argument('--num_images', type=int, default=64, help='Number of images to generate')
+    parser.add_argument('--num_images', type=int, help='Number of images to generate (uses config default if not specified)')
     parser.add_argument('--output_dir', help='Output directory for generated images')
+    parser.add_argument('--config', default='config.ini', help='Path to config file')
     
     args = parser.parse_args()
     
@@ -297,8 +367,12 @@ def main():
         print(f"Error: Checkpoint file not found: {args.checkpoint_path}")
         return
     
+    if not os.path.exists(args.config):
+        print(f"Error: Config file not found: {args.config}")
+        return
+    
     print(f"Starting image generation at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    generate_from_checkpoint(args.checkpoint_path, args.num_images, args.output_dir)
+    generate_from_checkpoint(args.checkpoint_path, args.num_images, args.output_dir, args.config)
     print(f"Image generation completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 

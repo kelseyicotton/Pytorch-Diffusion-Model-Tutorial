@@ -15,6 +15,8 @@ import numpy as np
 import os
 import logging
 from datetime import datetime
+import configparser
+import argparse
 
 from tqdm import tqdm
 from torchvision.utils import save_image, make_grid
@@ -23,57 +25,164 @@ from torchvision.datasets import MNIST, CIFAR10
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 import math
+from torch.utils.tensorboard import SummaryWriter
 
+
+def load_config(config_path='config.ini'):
+    """Load configuration from INI file"""
+    config = configparser.ConfigParser()
+    config.read(config_path)
+    
+    # Convert string values to appropriate types
+    def parse_list(value, dtype=float):
+        return [dtype(x.strip()) for x in value.split(',')]
+    
+    def parse_bool(value):
+        return value.lower() in ('true', '1', 'yes', 'on')
+    
+    # Parse configuration
+    cfg = {
+        # Dataset
+        'dataset': config.get('Dataset', 'dataset'),
+        'dataset_path': config.get('Dataset', 'dataset_path'),
+        'img_size': tuple(parse_list(config.get('Dataset', 'img_size'), int)),
+        'num_workers': config.getint('Dataset', 'num_workers'),
+        'pin_memory': parse_bool(config.get('Dataset', 'pin_memory')),
+        
+        # Model
+        'timestep_embedding_dim': config.getint('Model', 'timestep_embedding_dim'),
+        'n_layers': config.getint('Model', 'n_layers'),
+        'hidden_dim': config.getint('Model', 'hidden_dim'),
+        'n_timesteps': config.getint('Model', 'n_timesteps'),
+        'beta_minmax': parse_list(config.get('Model', 'beta_minmax'), float),
+        
+        # Training
+        'train_batch_size': config.getint('Training', 'train_batch_size'),
+        'inference_batch_size': config.getint('Training', 'inference_batch_size'),
+        'lr': config.getfloat('Training', 'lr'),
+        'epochs': config.getint('Training', 'epochs'),
+        'save_every_n_epochs': config.getint('Training', 'save_every_n_epochs'),
+        'seed': config.getint('Training', 'seed'),
+        
+        # Visualization
+        'denoising_viz_every': config.getint('Visualization', 'denoising_viz_every'),
+        'checkpoint_samples_every': config.getint('Visualization', 'checkpoint_samples_every'),
+        'checkpoint_num_samples': config.getint('Visualization', 'checkpoint_num_samples'),
+        'loss_analysis_every': config.getint('Visualization', 'loss_analysis_every'),
+        'param_hist_every': config.getint('Visualization', 'param_hist_every'),
+        
+        # Output
+        'base_output_dir': config.get('Output', 'base_output_dir'),
+        'save_individual_images': parse_bool(config.get('Output', 'save_individual_images')),
+        'save_grid_images': parse_bool(config.get('Output', 'save_grid_images')),
+        'image_dpi': config.getint('Output', 'image_dpi'),
+        
+        # Device
+        'device': config.get('Device', 'device'),
+        'gpu_id': config.getint('Device', 'gpu_id'),
+        
+        # Logging
+        'log_level': config.get('Logging', 'log_level'),
+        'save_logs': parse_bool(config.get('Logging', 'save_logs')),
+        'save_architecture': parse_bool(config.get('Logging', 'save_architecture')),
+        
+        # TensorBoard
+        'enable_tensorboard': parse_bool(config.get('TensorBoard', 'enable_tensorboard')),
+        'log_images': parse_bool(config.get('TensorBoard', 'log_images')),
+        'log_parameters': parse_bool(config.get('TensorBoard', 'log_parameters')),
+        
+        # Generation
+        'final_generation_count': config.getint('Generation', 'final_generation_count'),
+        'checkpoint_generation_count': config.getint('Generation', 'checkpoint_generation_count'),
+        'save_generated_individuals': parse_bool(config.get('Generation', 'save_generated_individuals')),
+        'save_generated_grid': parse_bool(config.get('Generation', 'save_generated_grid'))
+    }
+    
+    return cfg
+
+
+# Load configuration
+config = load_config()
 
 # Create timestamped output directory first
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-OUTPUT_DIR = f'outputs_{timestamp}'
+OUTPUT_DIR = f"{config['base_output_dir']}_{timestamp}"
 CHECKPOINT_DIR = os.path.join(OUTPUT_DIR, 'checkpoints')
+TENSORBOARD_DIR = os.path.join(OUTPUT_DIR, 'tensorboard')
+SAMPLES_DIR = os.path.join(OUTPUT_DIR, 'checkpoint_samples')
+VISUALIZATIONS_DIR = os.path.join(OUTPUT_DIR, 'visualizations')
+DENOISING_DIR = os.path.join(VISUALIZATIONS_DIR, 'denoising_process')
+NOISE_COMPARISON_DIR = os.path.join(VISUALIZATIONS_DIR, 'noise_comparison')
+FORWARD_PROCESS_DIR = os.path.join(VISUALIZATIONS_DIR, 'forward_process')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+os.makedirs(TENSORBOARD_DIR, exist_ok=True)
+os.makedirs(SAMPLES_DIR, exist_ok=True)
+os.makedirs(VISUALIZATIONS_DIR, exist_ok=True)
+os.makedirs(DENOISING_DIR, exist_ok=True)
+os.makedirs(NOISE_COMPARISON_DIR, exist_ok=True)
+os.makedirs(FORWARD_PROCESS_DIR, exist_ok=True)
+
+# Initialize TensorBoard writer (only if enabled)
+writer = SummaryWriter(log_dir=TENSORBOARD_DIR) if config['enable_tensorboard'] else None
 
 # Setup logging with timestamp (both console and file)
+log_level = getattr(logging, config['log_level'].upper())
+handlers = [logging.StreamHandler()]  # Console output
+if config['save_logs']:
+    handlers.append(logging.FileHandler(os.path.join(OUTPUT_DIR, 'training.log')))  # File output
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level,
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
-    handlers=[
-        logging.StreamHandler(),  # Console output
-        logging.FileHandler(os.path.join(OUTPUT_DIR, 'training.log'))  # File output
-    ]
+    handlers=handlers
 )
 logger = logging.getLogger(__name__)
 
 logger.info(f"Created output directory: {OUTPUT_DIR}")
 logger.info(f"Created checkpoint directory: {CHECKPOINT_DIR}")
+if config['enable_tensorboard']:
+    logger.info(f"Created TensorBoard directory: {TENSORBOARD_DIR}")
+logger.info(f"Created checkpoint samples directory: {SAMPLES_DIR}")
+logger.info(f"Created visualizations directory: {VISUALIZATIONS_DIR}")
+logger.info(f"Created denoising process directory: {DENOISING_DIR}")
+logger.info(f"Created noise comparison directory: {NOISE_COMPARISON_DIR}")
+logger.info(f"Created forward process directory: {FORWARD_PROCESS_DIR}")
 
 
 # ============================================================================
-# Model Hyperparameters
+# Model Hyperparameters (from config)
 # ============================================================================
 
-dataset_path = '~/datasets'
+dataset_path = config['dataset_path']
 
-cuda = torch.cuda.is_available()  # Automatically detect GPU availability
-DEVICE = torch.device("cuda:0" if cuda else "cpu")
+# Device setup
+if config['device'] == 'auto':
+    cuda = torch.cuda.is_available()
+    DEVICE = torch.device("cuda:0" if cuda else "cpu")
+elif config['device'] == 'cuda':
+    DEVICE = torch.device(f"cuda:{config['gpu_id']}")
+else:
+    DEVICE = torch.device("cpu")
 logger.info(f"Using device: {DEVICE}")
 
-dataset = 'MNIST'
-img_size = (32, 32, 3) if dataset == "CIFAR10" else (28, 28, 1)  # (width, height, channels)
+dataset = config['dataset']
+img_size = config['img_size']
 
-timestep_embedding_dim = 256
-n_layers = 8
-hidden_dim = 256
-n_timesteps = 1000
-beta_minmax = [1e-4, 2e-2]
+timestep_embedding_dim = config['timestep_embedding_dim']
+n_layers = config['n_layers']
+hidden_dim = config['hidden_dim']
+n_timesteps = config['n_timesteps']
+beta_minmax = config['beta_minmax']
 
-train_batch_size = 128
-inference_batch_size = 64
-lr = 5e-5
-epochs = 100
-save_every_n_epochs = 10  # Save checkpoint every N epochs
+train_batch_size = config['train_batch_size']
+inference_batch_size = config['inference_batch_size']
+lr = config['lr']
+epochs = config['epochs']
+save_every_n_epochs = config['save_every_n_epochs']
 
-seed = 1234
+seed = config['seed']
 
 hidden_dims = [hidden_dim for _ in range(n_layers)]
 torch.manual_seed(seed)
@@ -97,6 +206,25 @@ logger.info(f"  Save every N epochs: {save_every_n_epochs}")
 logger.info(f"  Seed: {seed}")
 logger.info("=" * 60)
 
+# Log hyperparameters to TensorBoard
+hparams = {
+    'dataset': dataset,
+    'img_size': str(img_size),
+    'timestep_embedding_dim': timestep_embedding_dim,
+    'n_layers': n_layers,
+    'hidden_dim': hidden_dim,
+    'n_timesteps': n_timesteps,
+    'beta_min': beta_minmax[0],
+    'beta_max': beta_minmax[1],
+    'train_batch_size': train_batch_size,
+    'inference_batch_size': inference_batch_size,
+    'lr': lr,
+    'epochs': epochs,
+    'save_every_n_epochs': save_every_n_epochs,
+    'seed': seed,
+    'device': str(DEVICE)
+}
+
 # Training configuration will be saved after model initialization
 
 
@@ -108,7 +236,7 @@ transform = transforms.Compose([
     transforms.ToTensor(),
 ])
 
-kwargs = {'num_workers': 1, 'pin_memory': True}
+kwargs = {'num_workers': config['num_workers'], 'pin_memory': config['pin_memory']}
 
 if dataset == 'CIFAR10':
     train_dataset = CIFAR10(dataset_path, transform=transform, train=True, download=True)
@@ -331,29 +459,232 @@ class Diffusion(nn.Module):
 # Helper Functions for Saving Images
 # ============================================================================
 
-def save_single_image(x, idx, filename):
+def save_single_image(x, idx, filename, output_dir=None):
     """Save a single image from a batch"""
+    if output_dir is None:
+        output_dir = OUTPUT_DIR
     fig = plt.figure()
     plt.imshow(x[idx].transpose(0, 1).transpose(1, 2).detach().cpu().numpy())
     plt.axis('off')
-    plt.savefig(os.path.join(OUTPUT_DIR, filename), bbox_inches='tight')
+    plt.savefig(os.path.join(output_dir, filename), bbox_inches='tight')
     plt.close(fig)
     logger.info(f"Saved {filename}")
 
 
-def save_sample_grid(x, postfix, filename):
+def save_sample_grid(x, postfix, filename, output_dir=None):
     """Save a grid of sample images"""
+    if output_dir is None:
+        output_dir = OUTPUT_DIR
     plt.figure(figsize=(8, 8))
     plt.axis("off")
     plt.title("Visualization of {}".format(postfix))
     plt.imshow(np.transpose(make_grid(x.detach().cpu(), padding=2, normalize=True), (1, 2, 0)))
-    plt.savefig(os.path.join(OUTPUT_DIR, filename), bbox_inches='tight')
+    plt.savefig(os.path.join(output_dir, filename), bbox_inches='tight')
     plt.close()
     logger.info(f"Saved {filename}")
 
 
+def save_visualization_grid(images, title, filename, output_dir, num_cols=4):
+    """Save a grid of visualization images with custom layout"""
+    num_images = len(images)
+    num_rows = (num_images + num_cols - 1) // num_cols
+    
+    fig, axes = plt.subplots(num_rows, num_cols, figsize=(num_cols * 3, num_rows * 3))
+    if num_rows == 1:
+        axes = axes.reshape(1, -1)
+    elif num_cols == 1:
+        axes = axes.reshape(-1, 1)
+    
+    for i, img in enumerate(images):
+        row = i // num_cols
+        col = i % num_cols
+        ax = axes[row, col] if num_rows > 1 else axes[col]
+        
+        # Convert tensor to numpy and transpose for display
+        img_np = img.detach().cpu().numpy()
+        if img_np.shape[0] == 1:  # Grayscale
+            ax.imshow(img_np[0], cmap='gray')
+        else:  # RGB
+            ax.imshow(np.transpose(img_np, (1, 2, 0)))
+        
+        ax.set_title(f"Step {i}")
+        ax.axis('off')
+    
+    # Hide unused subplots
+    for i in range(num_images, num_rows * num_cols):
+        row = i // num_cols
+        col = i % num_cols
+        ax = axes[row, col] if num_rows > 1 else axes[col]
+        ax.axis('off')
+    
+    plt.suptitle(title, fontsize=16)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, filename), bbox_inches='tight', dpi=150)
+    plt.close()
+    logger.info(f"Saved visualization: {filename}")
+
+
+def save_noise_comparison(actual_noise, predicted_noise, difference, epoch, output_dir):
+    """Save noise comparison visualization"""
+    # Create comparison grid
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    
+    # Actual noise
+    axes[0, 0].imshow(np.transpose(make_grid(actual_noise[:4].detach().cpu(), padding=2, normalize=True), (1, 2, 0)))
+    axes[0, 0].set_title("Actual Noise")
+    axes[0, 0].axis('off')
+    
+    # Predicted noise
+    axes[0, 1].imshow(np.transpose(make_grid(predicted_noise[:4].detach().cpu(), padding=2, normalize=True), (1, 2, 0)))
+    axes[0, 1].set_title("Predicted Noise")
+    axes[0, 1].axis('off')
+    
+    # Difference
+    axes[0, 2].imshow(np.transpose(make_grid(difference[:4].detach().cpu(), padding=2, normalize=True), (1, 2, 0)))
+    axes[0, 2].set_title("Difference (Error)")
+    axes[0, 2].axis('off')
+    
+    # Individual samples
+    for i in range(3):
+        axes[1, i].imshow(np.transpose(actual_noise[i].detach().cpu(), (1, 2, 0)))
+        axes[1, i].set_title(f"Sample {i}")
+        axes[1, i].axis('off')
+    
+    plt.suptitle(f"Noise Prediction Comparison - Epoch {epoch}", fontsize=16)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, f"noise_comparison_epoch_{epoch:03d}.png"), bbox_inches='tight', dpi=150)
+    plt.close()
+    logger.info(f"Saved noise comparison: noise_comparison_epoch_{epoch:03d}.png")
+
+
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def log_denoising_process(diffusion, writer, epoch):
+    """Log denoising process visualization to TensorBoard and save images"""
+    model = diffusion.model
+    model.eval()
+    
+    with torch.no_grad():
+        # Get a batch from test data for visualization
+        for batch_idx, (x, _) in enumerate(test_loader):
+            x = x.to(DEVICE)
+            break
+        
+        # Take first 4 samples for visualization
+        x_vis = x[:4]
+        
+        # 1. Forward process visualization (add noise at different timesteps)
+        timesteps_to_show = [0, 100, 200, 500, 800, 999]
+        forward_images = []
+        
+        for t in timesteps_to_show:
+            t_tensor = torch.full((4,), t, device=DEVICE, dtype=torch.long)
+            noisy_x, _ = diffusion.make_noisy(x_vis, t_tensor)
+            noisy_x = diffusion.reverse_scale_to_zero_to_one(noisy_x)
+            forward_images.append(noisy_x)
+        
+        # Log forward process to TensorBoard
+        if writer is not None and config['log_images']:
+            forward_grid = torch.cat(forward_images, dim=0)
+            writer.add_images(f"Denoising/Forward_Process_Epoch_{epoch}", forward_grid, epoch)
+        
+        # Save forward process images
+        save_visualization_grid(forward_images, 
+                               f"Forward Process - Epoch {epoch}", 
+                               f"forward_process_epoch_{epoch:03d}.png", 
+                               DENOISING_DIR)
+        
+        # 2. Noise prediction vs actual noise
+        t_random = torch.randint(0, diffusion.n_times, (4,), device=DEVICE)
+        noisy_x, actual_noise = diffusion.make_noisy(x_vis, t_random)
+        predicted_noise = model(noisy_x, t_random)
+        noise_difference = torch.abs(actual_noise - predicted_noise)
+        
+        # Log noise comparison to TensorBoard
+        if writer is not None and config['log_images']:
+            writer.add_images(f"Denoising/Actual_Noise_Epoch_{epoch}", actual_noise, epoch)
+            writer.add_images(f"Denoising/Predicted_Noise_Epoch_{epoch}", predicted_noise, epoch)
+            writer.add_images(f"Denoising/Noise_Difference_Epoch_{epoch}", noise_difference, epoch)
+        
+        # Save noise comparison images
+        save_noise_comparison(actual_noise, predicted_noise, noise_difference, epoch, NOISE_COMPARISON_DIR)
+        
+        # 3. Denoising steps visualization (reverse process)
+        # Start from pure noise and show denoising steps
+        x_t = torch.randn_like(x_vis)
+        denoising_steps = []
+        
+        # Show denoising at key timesteps
+        reverse_timesteps = [999, 800, 600, 400, 200, 0]
+        
+        for t in reverse_timesteps:
+            if t > 0:
+                t_tensor = torch.full((4,), t, device=DEVICE, dtype=torch.long)
+                x_t = diffusion.denoise_at_t(x_t, t_tensor, t)
+            
+            # Convert to 0-1 range for visualization
+            x_vis_step = diffusion.reverse_scale_to_zero_to_one(x_t)
+            denoising_steps.append(x_vis_step)
+        
+        # Log reverse process to TensorBoard
+        if writer is not None and config['log_images']:
+            reverse_grid = torch.cat(denoising_steps, dim=0)
+            writer.add_images(f"Denoising/Reverse_Process_Epoch_{epoch}", reverse_grid, epoch)
+        
+        # Save reverse process images
+        save_visualization_grid(denoising_steps, 
+                               f"Reverse Process (Denoising) - Epoch {epoch}", 
+                               f"reverse_process_epoch_{epoch:03d}.png", 
+                               DENOISING_DIR)
+        
+        # 4. Timestep distribution
+        if writer is not None:
+            timestep_hist = torch.histogram(t_random.float(), bins=20, range=(0, diffusion.n_times))
+            writer.add_histogram(f"Denoising/Timestep_Distribution_Epoch_{epoch}", t_random.float(), epoch)
+        
+        # Save timestep distribution plot
+        plt.figure(figsize=(10, 6))
+        plt.hist(t_random.cpu().numpy(), bins=20, alpha=0.7, edgecolor='black')
+        plt.title(f"Timestep Distribution - Epoch {epoch}")
+        plt.xlabel("Timestep")
+        plt.ylabel("Frequency")
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(DENOISING_DIR, f"timestep_distribution_epoch_{epoch:03d}.png"), 
+                   bbox_inches='tight', dpi=150)
+        plt.close()
+        logger.info(f"Saved timestep distribution: timestep_distribution_epoch_{epoch:03d}.png")
+    
+    model.train()  # Return to training mode
+
+
+def generate_checkpoint_samples(diffusion, epoch, num_samples=16, samples_dir=SAMPLES_DIR):
+    """Generate sample images at checkpoint and save them"""
+    logger.info(f"Generating {num_samples} samples for epoch {epoch}...")
+    
+    # Create epoch-specific samples directory
+    epoch_samples_dir = os.path.join(samples_dir, f'epoch_{epoch:03d}')
+    os.makedirs(epoch_samples_dir, exist_ok=True)
+    
+    # Generate samples
+    model = diffusion.model
+    model.eval()
+    with torch.no_grad():
+        generated_samples = diffusion.sample(N=num_samples)
+    
+    # Save individual samples
+    for i in range(min(num_samples, 16)):  # Save up to 16 individual images
+        save_single_image(generated_samples, idx=i, 
+                         filename=f"sample_{i:02d}.png", 
+                         output_dir=epoch_samples_dir)
+    
+    # Save sample grid
+    save_sample_grid(generated_samples, f"Epoch {epoch} Samples", 
+                    f"epoch_{epoch:03d}_grid.png", epoch_samples_dir)
+    
+    logger.info(f"Checkpoint samples saved to: {epoch_samples_dir}")
+    return generated_samples
 
 
 def save_checkpoint(diffusion, optimizer, epoch, loss, checkpoint_dir):
@@ -411,6 +742,24 @@ optimizer = Adam(diffusion.parameters(), lr=lr)
 denoising_loss = nn.MSELoss()
 
 logger.info(f"Number of model parameters: {count_parameters(diffusion)}")
+
+# Log model architecture to TensorBoard
+if writer is not None:
+    writer.add_text("Model/Architecture", f"Total parameters: {count_parameters(diffusion):,}", 0)
+    writer.add_text("Model/Architecture", f"Hidden dimensions: {hidden_dims}", 0)
+    writer.add_text("Model/Architecture", f"Image resolution: {img_size}", 0)
+    writer.add_text("Model/Architecture", f"Timestep embedding dim: {timestep_embedding_dim}", 0)
+    writer.add_text("Model/Architecture", f"Number of timesteps: {n_timesteps}", 0)
+
+    # Log model graph (if possible)
+    try:
+        # Create a dummy input for model graph visualization
+        dummy_input = torch.randn(1, img_size[2], img_size[0], img_size[1]).to(DEVICE)
+        dummy_timestep = torch.randint(0, n_timesteps, (1,)).to(DEVICE)
+        writer.add_graph(model, (dummy_input, dummy_timestep))
+        logger.info("Model graph logged to TensorBoard")
+    except Exception as e:
+        logger.warning(f"Could not log model graph to TensorBoard: {e}")
 
 # ============================================================================
 # Detailed Model Architecture Logging
@@ -567,6 +916,42 @@ for batch_idx, (x, _) in enumerate(test_loader):
     perturbed_images = diffusion.reverse_scale_to_zero_to_one(perturbed_images)
     break
 
+# Log forward process images to TensorBoard
+if writer is not None and config['log_images']:
+    writer.add_images("Forward_Process/Perturbed", perturbed_images, 0)
+    writer.add_image("Forward_Process/Sample_0", perturbed_images[0], 0)
+    writer.add_image("Forward_Process/Sample_1", perturbed_images[1], 0)
+    writer.add_image("Forward_Process/Sample_2", perturbed_images[2], 0)
+
+    # Log original images for comparison
+    writer.add_images("Forward_Process/Original", x[:inference_batch_size], 0)
+    writer.add_image("Forward_Process/Original_Sample_0", x[0], 0)
+
+    # Log noise that was added
+    noise_visualization = epsilon[:4]  # Take first 4 noise samples
+    writer.add_images("Forward_Process/Added_Noise", noise_visualization, 0)
+    writer.add_image("Forward_Process/Noise_Sample_0", noise_visualization[0], 0)
+
+# Save forward process images
+save_sample_grid(perturbed_images, "Forward Process - Perturbed Images", 
+                "forward_process_perturbed.png", FORWARD_PROCESS_DIR)
+save_sample_grid(x[:inference_batch_size], "Forward Process - Original Images", 
+                "forward_process_original.png", FORWARD_PROCESS_DIR)
+save_sample_grid(noise_visualization, "Forward Process - Added Noise", 
+                "forward_process_noise.png", FORWARD_PROCESS_DIR)
+
+# Save individual samples
+for i in range(min(4, len(perturbed_images))):
+    save_single_image(perturbed_images, idx=i, 
+                     filename=f"perturbed_sample_{i:02d}.png", 
+                     output_dir=FORWARD_PROCESS_DIR)
+    save_single_image(x, idx=i, 
+                     filename=f"original_sample_{i:02d}.png", 
+                     output_dir=FORWARD_PROCESS_DIR)
+    save_single_image(noise_visualization, idx=i, 
+                     filename=f"noise_sample_{i:02d}.png", 
+                     output_dir=FORWARD_PROCESS_DIR)
+
 # Save individual perturbed images
 save_single_image(perturbed_images, idx=0, filename="perturbed_image_0.png")
 save_single_image(perturbed_images, idx=1, filename="perturbed_image_1.png")
@@ -582,6 +967,8 @@ model.train()
 
 for epoch in range(epochs):
     noise_prediction_loss = 0
+    batch_losses = []
+    
     for batch_idx, (x, _) in tqdm(enumerate(train_loader), total=len(train_loader)):
         optimizer.zero_grad()
 
@@ -591,16 +978,104 @@ for epoch in range(epochs):
         loss = denoising_loss(pred_epsilon, epsilon)
 
         noise_prediction_loss += loss.item()
+        batch_losses.append(loss.item())
 
         loss.backward()
         optimizer.step()
+        
+        # Log batch-level metrics every 50 batches
+        if batch_idx % 50 == 0 and writer is not None:
+            writer.add_scalar("Training/Batch_Loss", loss.item(), epoch * len(train_loader) + batch_idx)
+            writer.add_scalar("Training/Learning_Rate_Batch", optimizer.param_groups[0]['lr'], 
+                            epoch * len(train_loader) + batch_idx)
 
     avg_loss = noise_prediction_loss / batch_idx
     logger.info(f"Epoch {epoch + 1}/{epochs} complete! Denoising Loss: {avg_loss:.6f}")
     
+    # Calculate additional loss statistics
+    batch_losses_tensor = torch.tensor(batch_losses)
+    loss_std = batch_losses_tensor.std().item()
+    loss_min = batch_losses_tensor.min().item()
+    loss_max = batch_losses_tensor.max().item()
+    
+    # Log training metrics to TensorBoard
+    if writer is not None:
+        writer.add_scalar("Training/Loss", avg_loss, epoch + 1)
+        writer.add_scalar("Training/Loss_Std", loss_std, epoch + 1)
+        writer.add_scalar("Training/Loss_Min", loss_min, epoch + 1)
+        writer.add_scalar("Training/Loss_Max", loss_max, epoch + 1)
+        writer.add_scalar("Training/Learning_Rate", optimizer.param_groups[0]['lr'], epoch + 1)
+        
+        # Log loss distribution
+        writer.add_histogram("Training/Loss_Distribution", batch_losses_tensor, epoch + 1)
+    
+    # Save loss curve plot every N epochs
+    if (epoch + 1) % config['loss_analysis_every'] == 0:
+        plt.figure(figsize=(12, 8))
+        
+        # Plot 1: Loss over batches in this epoch
+        plt.subplot(2, 2, 1)
+        plt.plot(batch_losses)
+        plt.title(f"Loss per Batch - Epoch {epoch + 1}")
+        plt.xlabel("Batch")
+        plt.ylabel("Loss")
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 2: Loss distribution histogram
+        plt.subplot(2, 2, 2)
+        plt.hist(batch_losses, bins=20, alpha=0.7, edgecolor='black')
+        plt.title(f"Loss Distribution - Epoch {epoch + 1}")
+        plt.xlabel("Loss")
+        plt.ylabel("Frequency")
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 3: Loss statistics
+        plt.subplot(2, 2, 3)
+        stats = [avg_loss, loss_std, loss_min, loss_max]
+        labels = ['Mean', 'Std', 'Min', 'Max']
+        plt.bar(labels, stats, alpha=0.7)
+        plt.title(f"Loss Statistics - Epoch {epoch + 1}")
+        plt.ylabel("Loss Value")
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 4: Learning rate
+        plt.subplot(2, 2, 4)
+        plt.bar(['Current'], [optimizer.param_groups[0]['lr']], alpha=0.7)
+        plt.title(f"Learning Rate - Epoch {epoch + 1}")
+        plt.ylabel("Learning Rate")
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(VISUALIZATIONS_DIR, f"loss_analysis_epoch_{epoch+1:03d}.png"), 
+                   bbox_inches='tight', dpi=150)
+        plt.close()
+        logger.info(f"Saved loss analysis: loss_analysis_epoch_{epoch+1:03d}.png")
+    
+    # Log model parameters (gradients and weights) every N epochs
+    if (epoch + 1) % config['param_hist_every'] == 0 and writer is not None and config['log_parameters']:
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                writer.add_histogram(f"Gradients/{name}", param.grad, epoch + 1)
+            writer.add_histogram(f"Weights/{name}", param, epoch + 1)
+    
+    # Log denoising process visualization every N epochs
+    if (epoch + 1) % config['denoising_viz_every'] == 0:
+        log_denoising_process(diffusion, writer, epoch + 1)
+    
     # Save checkpoint every N epochs or at the end
     if (epoch + 1) % save_every_n_epochs == 0 or (epoch + 1) == epochs:
         save_checkpoint(diffusion, optimizer, epoch + 1, avg_loss, CHECKPOINT_DIR)
+        
+        # Generate samples at checkpoint
+        checkpoint_samples = generate_checkpoint_samples(diffusion, epoch + 1, 
+                                                       num_samples=config['checkpoint_num_samples'])
+        
+        # Log checkpoint samples to TensorBoard
+        if writer is not None and config['log_images']:
+            writer.add_images(f"Checkpoint_Samples/Epoch_{epoch+1:03d}", checkpoint_samples, epoch + 1)
+            writer.add_image(f"Checkpoint_Samples/Epoch_{epoch+1:03d}_Sample_0", checkpoint_samples[0], epoch + 1)
+            writer.add_image(f"Checkpoint_Samples/Epoch_{epoch+1:03d}_Sample_1", checkpoint_samples[1], epoch + 1)
+            writer.add_image(f"Checkpoint_Samples/Epoch_{epoch+1:03d}_Sample_2", checkpoint_samples[2], epoch + 1)
 
 logger.info("Training finished!")
 
@@ -613,15 +1088,19 @@ logger.info("Generating images from noise...")
 model.eval()
 
 with torch.no_grad():
-    generated_images = diffusion.sample(N=inference_batch_size)
+    generated_images = diffusion.sample(N=config['final_generation_count'])
 
-# Save individual generated images
-save_single_image(generated_images, idx=0, filename="generated_image_0.png")
-save_single_image(generated_images, idx=1, filename="generated_image_1.png")
-save_single_image(generated_images, idx=2, filename="generated_image_2.png")
-save_single_image(generated_images, idx=3, filename="generated_image_3.png")
-save_single_image(generated_images, idx=4, filename="generated_image_4.png")
-save_single_image(generated_images, idx=5, filename="generated_image_5.png")
+# Log generated images to TensorBoard
+if writer is not None and config['log_images']:
+    writer.add_images("Generated/Images", generated_images, 0)
+    writer.add_image("Generated/Sample_0", generated_images[0], 0)
+    writer.add_image("Generated/Sample_1", generated_images[1], 0)
+    writer.add_image("Generated/Sample_2", generated_images[2], 0)
+
+# Save individual generated images (if enabled)
+if config['save_generated_individuals']:
+    for i in range(min(6, len(generated_images))):
+        save_single_image(generated_images, idx=i, filename=f"generated_image_{i}.png")
 
 
 # ============================================================================
@@ -629,9 +1108,140 @@ save_single_image(generated_images, idx=5, filename="generated_image_5.png")
 # ============================================================================
 
 logger.info("Saving comparison grids...")
-save_sample_grid(perturbed_images, "Perturbed Images", "comparison_perturbed.png")
-save_sample_grid(generated_images, "Generated Images", "comparison_generated.png")
-save_sample_grid(x[:inference_batch_size], "Ground-truth Images", "comparison_groundtruth.png")
+if config['save_grid_images']:
+    save_sample_grid(perturbed_images, "Perturbed Images", "comparison_perturbed.png")
+    save_sample_grid(generated_images, "Generated Images", "comparison_generated.png")
+    save_sample_grid(x[:config['final_generation_count']], "Ground-truth Images", "comparison_groundtruth.png")
+
+# Log comparison images to TensorBoard
+if writer is not None and config['log_images']:
+    writer.add_images("Comparison/Perturbed", perturbed_images, 0)
+    writer.add_images("Comparison/Generated", generated_images, 0)
+    writer.add_images("Comparison/Ground_Truth", x[:config['final_generation_count']], 0)
+
+    # Log hyperparameters and metrics to TensorBoard
+    writer.add_hparams(hparams, {"Final/Loss": avg_loss})
+
+# Close TensorBoard writer
+if writer is not None:
+    writer.close()
+    logger.info(f"TensorBoard logs saved to: {TENSORBOARD_DIR}")
+    logger.info(f"To view TensorBoard: tensorboard --logdir={TENSORBOARD_DIR}")
+
+# Save configuration used for this training run
+config_save_path = os.path.join(OUTPUT_DIR, 'training_config_used.json')
+with open(config_save_path, 'w') as f:
+    json.dump(config, f, indent=2)
+logger.info(f"Training configuration saved to: {config_save_path}")
+
+# Copy the original config.ini file to output directory for complete reproducibility
+import shutil
+config_original_path = os.path.join(OUTPUT_DIR, 'config_original.ini')
+try:
+    shutil.copy2('config.ini', config_original_path)
+    logger.info(f"Original config.ini copied to: {config_original_path}")
+except FileNotFoundError:
+    logger.warning("Original config.ini file not found - skipping copy")
+
+# Also save a human-readable config summary
+config_summary_path = os.path.join(OUTPUT_DIR, 'config_summary.txt')
+with open(config_summary_path, 'w') as f:
+    f.write("=" * 60 + "\n")
+    f.write("DDPM Training Configuration Summary\n")
+    f.write("=" * 60 + "\n")
+    f.write(f"Training completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    f.write(f"Output directory: {OUTPUT_DIR}\n\n")
+    
+    f.write("Dataset Configuration:\n")
+    f.write(f"  Dataset: {config['dataset']}\n")
+    f.write(f"  Image size: {config['img_size']}\n")
+    f.write(f"  Dataset path: {config['dataset_path']}\n\n")
+    
+    f.write("Model Configuration:\n")
+    f.write(f"  Timestep embedding dim: {config['timestep_embedding_dim']}\n")
+    f.write(f"  Number of layers: {config['n_layers']}\n")
+    f.write(f"  Hidden dimension: {config['hidden_dim']}\n")
+    f.write(f"  Number of timesteps: {config['n_timesteps']}\n")
+    f.write(f"  Beta schedule: {config['beta_minmax']}\n\n")
+    
+    f.write("Training Configuration:\n")
+    f.write(f"  Training batch size: {config['train_batch_size']}\n")
+    f.write(f"  Inference batch size: {config['inference_batch_size']}\n")
+    f.write(f"  Learning rate: {config['lr']}\n")
+    f.write(f"  Number of epochs: {config['epochs']}\n")
+    f.write(f"  Save every N epochs: {config['save_every_n_epochs']}\n")
+    f.write(f"  Random seed: {config['seed']}\n\n")
+    
+    f.write("Visualization Configuration:\n")
+    f.write(f"  Denoising viz every: {config['denoising_viz_every']} epochs\n")
+    f.write(f"  Checkpoint samples every: {config['checkpoint_samples_every']} epochs\n")
+    f.write(f"  Checkpoint num samples: {config['checkpoint_num_samples']}\n")
+    f.write(f"  Loss analysis every: {config['loss_analysis_every']} epochs\n")
+    f.write(f"  Parameter hist every: {config['param_hist_every']} epochs\n\n")
+    
+    f.write("Output Configuration:\n")
+    f.write(f"  Save individual images: {config['save_individual_images']}\n")
+    f.write(f"  Save grid images: {config['save_grid_images']}\n")
+    f.write(f"  Image DPI: {config['image_dpi']}\n\n")
+    
+    f.write("Device Configuration:\n")
+    f.write(f"  Device: {config['device']}\n")
+    f.write(f"  GPU ID: {config['gpu_id']}\n")
+    f.write(f"  Actual device used: {DEVICE}\n\n")
+    
+    f.write("Logging Configuration:\n")
+    f.write(f"  Log level: {config['log_level']}\n")
+    f.write(f"  Save logs: {config['save_logs']}\n")
+    f.write(f"  Save architecture: {config['save_architecture']}\n\n")
+    
+    f.write("TensorBoard Configuration:\n")
+    f.write(f"  Enable TensorBoard: {config['enable_tensorboard']}\n")
+    f.write(f"  Log images: {config['log_images']}\n")
+    f.write(f"  Log parameters: {config['log_parameters']}\n\n")
+    
+    f.write("Generation Configuration:\n")
+    f.write(f"  Final generation count: {config['final_generation_count']}\n")
+    f.write(f"  Checkpoint generation count: {config['checkpoint_generation_count']}\n")
+    f.write(f"  Save generated individuals: {config['save_generated_individuals']}\n")
+    f.write(f"  Save generated grid: {config['save_generated_grid']}\n\n")
+    
+    f.write("=" * 60 + "\n")
+
+logger.info(f"Configuration summary saved to: {config_summary_path}")
+
+# Create a config comparison report if original config exists
+config_comparison_path = os.path.join(OUTPUT_DIR, 'config_comparison.txt')
+try:
+    with open('config.ini', 'r') as f:
+        original_config_content = f.read()
+    
+    with open(config_comparison_path, 'w') as f:
+        f.write("=" * 80 + "\n")
+        f.write("Configuration Comparison Report\n")
+        f.write("=" * 80 + "\n")
+        f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Training output: {OUTPUT_DIR}\n\n")
+        
+        f.write("This report shows the configuration used for this training run.\n")
+        f.write("Files saved:\n")
+        f.write(f"  - config_original.ini: Original config file used\n")
+        f.write(f"  - training_config_used.json: Parsed config as JSON\n")
+        f.write(f"  - config_summary.txt: Human-readable summary\n")
+        f.write(f"  - config_comparison.txt: This comparison report\n\n")
+        
+        f.write("To reproduce this training run:\n")
+        f.write("1. Copy config_original.ini to your working directory\n")
+        f.write("2. Run: python 01_denoising_diffusion_probabilistic_model.py\n\n")
+        
+        f.write("To generate images from checkpoints:\n")
+        f.write("1. Use the saved config: python generate_from_checkpoint.py <checkpoint_path> --config config_original.ini\n")
+        f.write("2. Or let it auto-detect: python generate_from_checkpoint.py <checkpoint_path>\n\n")
+        
+        f.write("=" * 80 + "\n")
+    
+    logger.info(f"Configuration comparison report saved to: {config_comparison_path}")
+except FileNotFoundError:
+    logger.warning("Original config.ini not found - skipping comparison report")
 
 logger.info(f"All outputs saved to '{OUTPUT_DIR}/' directory")
 logger.info(f"Job completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
